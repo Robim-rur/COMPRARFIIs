@@ -1,0 +1,384 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import plotly.express as px
+from io import BytesIO
+from datetime import datetime
+
+# ==========================================================
+# CONFIG
+# ==========================================================
+
+st.set_page_config(
+    page_title="FII Best Buy Day Analyzer",
+    layout="wide"
+)
+
+st.title("🏢 FII Best Buy Day Analyzer")
+st.caption("Descubra quais dias do mês historicamente apresentaram os preços mais atrativos para compra de FIIs.")
+
+# ==========================================================
+# FUNÇÕES
+# ==========================================================
+
+@st.cache_data(ttl=3600)
+def baixar_dados(ticker):
+    try:
+        df = yf.download(
+            ticker,
+            auto_adjust=True,
+            progress=False
+        )
+
+        if df.empty:
+            return None
+
+        df = df.reset_index()
+
+        if "Date" not in df.columns:
+            return None
+
+        df["Date"] = pd.to_datetime(df["Date"])
+        df["Day"] = df["Date"].dt.day
+        df["Month"] = df["Date"].dt.to_period("M")
+
+        return df
+
+    except Exception:
+        return None
+
+
+def classificar_confiabilidade(meses):
+
+    if meses >= 60:
+        return "Muito Alta"
+
+    if meses >= 36:
+        return "Alta"
+
+    if meses >= 24:
+        return "Média"
+
+    if meses >= 12:
+        return "Baixa"
+
+    return "Muito Baixa"
+
+
+def analisar_fii(df):
+
+    fechamento = "Close"
+
+    meses = df["Month"].nunique()
+
+    registros = []
+
+    for periodo, grupo in df.groupby("Month"):
+
+        minimo = grupo[fechamento].min()
+        maximo = grupo[fechamento].max()
+
+        if maximo == minimo:
+            continue
+
+        grupo = grupo.copy()
+
+        grupo["Posicao"] = (
+            (grupo[fechamento] - minimo)
+            / (maximo - minimo)
+        )
+
+        registros.append(
+            grupo[["Day", "Posicao"]]
+        )
+
+    if len(registros) == 0:
+        return None
+
+    base = pd.concat(registros)
+
+    media_por_dia = (
+        base.groupby("Day")["Posicao"]
+        .mean()
+        .reset_index()
+    )
+
+    media_por_dia["Atratividade"] = (
+        1 - media_por_dia["Posicao"]
+    ) * 100
+
+    melhor_dia = int(
+        media_por_dia.sort_values("Posicao")
+        .iloc[0]["Day"]
+    )
+
+    top3 = (
+        media_por_dia.sort_values("Posicao")
+        .head(3)["Day"]
+        .tolist()
+    )
+
+    return {
+        "meses": meses,
+        "confiabilidade": classificar_confiabilidade(meses),
+        "melhor_dia": melhor_dia,
+        "top3": top3,
+        "heatmap": media_por_dia
+    }
+
+
+def calcular_score_atual(df):
+
+    fechamento = "Close"
+
+    hoje = datetime.now().day
+
+    historico_dia = df[
+        df["Day"] == hoje
+    ][fechamento]
+
+    if len(historico_dia) < 5:
+        return np.nan
+
+    atual = float(df[fechamento].iloc[-1])
+
+    score = (
+        historico_dia > atual
+    ).mean() * 100
+
+    return round(score, 1)
+
+
+def gerar_excel(df_ranking):
+
+    output = BytesIO()
+
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl"
+    ) as writer:
+
+        df_ranking.to_excel(
+            writer,
+            sheet_name="Ranking",
+            index=False
+        )
+
+    output.seek(0)
+
+    return output
+
+
+# ==========================================================
+# SIDEBAR
+# ==========================================================
+
+st.sidebar.header("⚙️ Configurações")
+
+fiis_padrao = [
+    "GARE11",
+    "GGRC11",
+    "HGLG11",
+    "XPLG11",
+    "MXRF11"
+]
+
+texto_fiis = st.sidebar.text_area(
+    "Lista de FIIs (um por linha)",
+    value="\n".join(fiis_padrao),
+    height=200
+)
+
+fiis = []
+
+for linha in texto_fiis.splitlines():
+
+    ticker = linha.strip().upper()
+
+    if ticker:
+        fiis.append(ticker)
+
+analisar = st.sidebar.button(
+    "🚀 Analisar FIIs",
+    use_container_width=True
+)
+
+# ==========================================================
+# EXECUÇÃO
+# ==========================================================
+
+if analisar:
+
+    ranking = []
+
+    abas = st.tabs(fiis)
+
+    for i, fii in enumerate(fiis):
+
+        with abas[i]:
+
+            ticker_yahoo = fii + ".SA"
+
+            st.subheader(f"📊 {fii}")
+
+            with st.spinner(
+                f"Baixando histórico de {fii}..."
+            ):
+
+                df = baixar_dados(
+                    ticker_yahoo
+                )
+
+            if df is None:
+
+                st.error(
+                    "Não foi possível carregar os dados."
+                )
+
+                continue
+
+            analise = analisar_fii(df)
+
+            if analise is None:
+
+                st.warning(
+                    "Histórico insuficiente."
+                )
+
+                continue
+
+            score = calcular_score_atual(df)
+
+            ranking.append({
+                "FII": fii,
+                "Melhor Dia": analise["melhor_dia"],
+                "Top 1": analise["top3"][0] if len(analise["top3"]) > 0 else "",
+                "Top 2": analise["top3"][1] if len(analise["top3"]) > 1 else "",
+                "Top 3": analise["top3"][2] if len(analise["top3"]) > 2 else "",
+                "Meses": analise["meses"],
+                "Confiabilidade": analise["confiabilidade"],
+                "Score Atual": score
+            })
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Melhor Dia",
+                analise["melhor_dia"]
+            )
+
+            c2.metric(
+                "Meses Analisados",
+                analise["meses"]
+            )
+
+            c3.metric(
+                "Confiabilidade",
+                analise["confiabilidade"]
+            )
+
+            c4.metric(
+                "Score Atual",
+                f"{score:.1f}"
+                if pd.notna(score)
+                else "N/A"
+            )
+
+            st.markdown("### 🏆 Top 3 Dias")
+
+            top3_df = pd.DataFrame({
+                "Posição": [
+                    "1º",
+                    "2º",
+                    "3º"
+                ],
+                "Dia": analise["top3"]
+            })
+
+            st.dataframe(
+                top3_df,
+                use_container_width=True
+            )
+
+            st.markdown("### 🔥 Heatmap")
+
+            heatmap = analise["heatmap"].copy()
+
+            heatmap["Linha"] = 1
+
+            fig = px.imshow(
+                np.array(
+                    [heatmap["Atratividade"].values]
+                ),
+                labels=dict(
+                    x="Dia do Mês",
+                    y="",
+                    color="Atratividade"
+                ),
+                x=heatmap["Day"].astype(str),
+                aspect="auto"
+            )
+
+            fig.update_layout(
+                height=250
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True
+            )
+
+            st.markdown("### 📈 Histórico")
+
+            fig2 = px.line(
+                df,
+                x="Date",
+                y="Close",
+                title=f"{fii} - Histórico de Preços"
+            )
+
+            st.plotly_chart(
+                fig2,
+                use_container_width=True
+            )
+
+    # ======================================================
+    # RANKING GERAL
+    # ======================================================
+
+    if len(ranking) > 0:
+
+        st.divider()
+
+        st.header("🏆 Ranking Geral")
+
+        ranking_df = pd.DataFrame(ranking)
+
+        ranking_df = ranking_df.sort_values(
+            "Score Atual",
+            ascending=False,
+            na_position="last"
+        )
+
+        st.dataframe(
+            ranking_df,
+            use_container_width=True
+        )
+
+        excel = gerar_excel(
+            ranking_df
+        )
+
+        st.download_button(
+            "📥 Exportar Ranking Excel",
+            data=excel,
+            file_name="ranking_fiis.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+else:
+
+    st.info(
+        "Clique em 'Analisar FIIs' na barra lateral para iniciar a análise."
+    )
