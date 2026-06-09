@@ -176,26 +176,6 @@ def calcular_score_sazonal(df):
     return round(score, 1)
 
 
-def gerar_excel(df):
-
-    output = BytesIO()
-
-    with pd.ExcelWriter(
-        output,
-        engine="openpyxl"
-    ) as writer:
-
-        df.to_excel(
-            writer,
-            sheet_name="Ranking",
-            index=False
-        )
-
-    output.seek(0)
-
-    return output
-
-
 # ==========================================================
 # SIDEBAR
 # ==========================================================
