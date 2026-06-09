@@ -16,9 +16,10 @@ st.set_page_config(
 )
 
 st.title("🏢 FII Best Buy Day Analyzer")
+
 st.caption(
-    "Identifique os dias do mês em que cada FII historicamente "
-    "negociou mais próximo da mínima mensal."
+    "Descubra quais dias do mês historicamente apresentaram "
+    "os preços mais próximos da mínima mensal."
 )
 
 # ==========================================================
@@ -32,21 +33,18 @@ def baixar_dados(ticker):
 
         df = yf.download(
             ticker,
+            period="max",
             auto_adjust=True,
-            progress=False,
-            multi_level_index=False
+            progress=False
         )
 
         if df.empty:
             return None
 
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
         df = df.reset_index()
-
-        if "Date" not in df.columns:
-            return None
-
-        if "Close" not in df.columns:
-            return None
 
         df["Date"] = pd.to_datetime(df["Date"])
 
@@ -128,10 +126,6 @@ def analisar_fii(df):
         .reset_index()
     )
 
-    estatistica["Atratividade"] = (
-        1 - estatistica["PosicaoMedia"]
-    ) * 100
-
     estatistica = estatistica.sort_values(
         "PosicaoMedia"
     )
@@ -150,78 +144,30 @@ def analisar_fii(df):
         "meses": meses,
         "confiabilidade": classificar_confiabilidade(meses),
         "melhor_dia": melhor_dia,
-        "top3": top3,
-        "heatmap": estatistica
+        "top3": top3
     }
 
 
-def calcular_score_atual(df):
+def calcular_score_sazonal(df):
 
-    if len(df) < 30:
+    hoje = datetime.now().day
+
+    historico_mesmo_dia = df[
+        df["Day"] == hoje
+    ]["Close"]
+
+    if len(historico_mesmo_dia) < 5:
         return np.nan
 
-    atual = float(df["Close"].iloc[-1])
-
-    minimo = float(df["Close"].min())
-    maximo = float(df["Close"].max())
-
-    if np.isclose(maximo, minimo):
-        return np.nan
+    atual = float(
+        df["Close"].iloc[-1]
+    )
 
     score = (
-        (maximo - atual)
-        / (maximo - minimo)
-    ) * 100
-
-    score = max(0, min(score, 100))
+        historico_mesmo_dia > atual
+    ).mean() * 100
 
     return round(score, 1)
-
-
-def criar_heatmap(heatmap_df):
-
-    dias = list(range(1, 32))
-
-    valores = []
-
-    for dia in dias:
-
-        linha = heatmap_df[
-            heatmap_df["Day"] == dia
-        ]
-
-        if len(linha):
-
-            valores.append(
-                float(
-                    linha["Atratividade"].iloc[0]
-                )
-            )
-
-        else:
-
-            valores.append(np.nan)
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=[valores],
-            x=dias,
-            y=[""],
-            hoverongaps=False
-        )
-    )
-
-    fig.update_layout(
-        height=220,
-        margin=dict(
-            l=20,
-            r=20,
-            t=20,
-            b=20
-        )
-    )
-
-    return fig
 
 
 def gerar_excel(df):
@@ -286,21 +232,13 @@ if analisar:
 
     ranking = []
 
-    if len(fiis) == 0:
-
-        st.warning(
-            "Informe pelo menos um FII."
-        )
-
-        st.stop()
-
     abas = st.tabs(fiis)
 
-    for idx, fii in enumerate(fiis):
+    for i, fii in enumerate(fiis):
 
-        with abas[idx]:
+        with abas[i]:
 
-            ticker = f"{fii}.SA"
+            ticker = fii + ".SA"
 
             st.subheader(f"📊 {fii}")
 
@@ -308,9 +246,7 @@ if analisar:
                 f"Carregando {fii}..."
             ):
 
-                df = baixar_dados(
-                    ticker
-                )
+                df = baixar_dados(ticker)
 
             if df is None:
 
@@ -330,20 +266,20 @@ if analisar:
 
                 continue
 
-            score = calcular_score_atual(df)
+            score = calcular_score_sazonal(df)
 
             ranking.append({
                 "FII": fii,
                 "Melhor Dia": analise["melhor_dia"],
-                "Top 1": analise["top3"][0] if len(analise["top3"]) > 0 else "",
-                "Top 2": analise["top3"][1] if len(analise["top3"]) > 1 else "",
-                "Top 3": analise["top3"][2] if len(analise["top3"]) > 2 else "",
+                "Top 1": analise["top3"][0],
+                "Top 2": analise["top3"][1],
+                "Top 3": analise["top3"][2],
                 "Meses": analise["meses"],
                 "Confiabilidade": analise["confiabilidade"],
-                "Score Atual": score
+                "Score": score
             })
 
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
 
             c1.metric(
                 "Melhor Dia",
@@ -361,42 +297,26 @@ if analisar:
             )
 
             c4.metric(
-                "Score",
+                "Score Sazonal",
                 score
             )
 
-            st.markdown(
-                "### 🏆 Top 3 Dias"
+            c5.metric(
+                "Início Histórico",
+                df["Date"].dt.date.min()
             )
 
-            top3_df = pd.DataFrame({
-                "Posição": [
-                    "1º",
-                    "2º",
-                    "3º"
-                ],
-                "Dia": analise["top3"]
-            })
+            st.markdown("### 🏆 Top 3 Dias")
 
             st.dataframe(
-                top3_df,
+                pd.DataFrame({
+                    "Posição": ["1º", "2º", "3º"],
+                    "Dia": analise["top3"]
+                }),
                 use_container_width=True
             )
 
-            st.markdown(
-                "### 🔥 Heatmap"
-            )
-
-            st.plotly_chart(
-                criar_heatmap(
-                    analise["heatmap"]
-                ),
-                use_container_width=True
-            )
-
-            st.markdown(
-                "### 📈 Histórico"
-            )
+            st.markdown("### 📈 Histórico")
 
             fig = go.Figure()
 
@@ -422,17 +342,16 @@ if analisar:
 
         st.divider()
 
-        st.header(
-            "🏆 Ranking Geral"
-        )
+        st.header("🏆 Ranking Geral")
 
         ranking_df = pd.DataFrame(
             ranking
         )
 
         ranking_df = ranking_df.sort_values(
-            "Score Atual",
-            ascending=False
+            "Score",
+            ascending=False,
+            na_position="last"
         )
 
         st.dataframe(
@@ -445,7 +364,7 @@ if analisar:
         )
 
         st.download_button(
-            label="📥 Exportar Excel",
+            "📥 Exportar Excel",
             data=excel,
             file_name="ranking_fiis.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
