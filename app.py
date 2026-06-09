@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import plotly.express as px
+import plotly.graph_objects as go
 from io import BytesIO
 from datetime import datetime
 
@@ -16,7 +16,10 @@ st.set_page_config(
 )
 
 st.title("🏢 FII Best Buy Day Analyzer")
-st.caption("Descubra quais dias do mês historicamente apresentaram os preços mais atrativos para compra de FIIs.")
+st.caption(
+    "Identifique os dias do mês em que cada FII historicamente "
+    "negociou mais próximo da mínima mensal."
+)
 
 # ==========================================================
 # FUNÇÕES
@@ -24,11 +27,14 @@ st.caption("Descubra quais dias do mês historicamente apresentaram os preços m
 
 @st.cache_data(ttl=3600)
 def baixar_dados(ticker):
+
     try:
+
         df = yf.download(
             ticker,
             auto_adjust=True,
-            progress=False
+            progress=False,
+            multi_level_index=False
         )
 
         if df.empty:
@@ -39,13 +45,27 @@ def baixar_dados(ticker):
         if "Date" not in df.columns:
             return None
 
+        if "Close" not in df.columns:
+            return None
+
         df["Date"] = pd.to_datetime(df["Date"])
+
+        df["Close"] = pd.to_numeric(
+            df["Close"],
+            errors="coerce"
+        )
+
+        df = df.dropna(subset=["Close"])
+
         df["Day"] = df["Date"].dt.day
         df["Month"] = df["Date"].dt.to_period("M")
 
         return df
 
-    except Exception:
+    except Exception as e:
+
+        st.error(f"Erro ao baixar {ticker}: {e}")
+
         return None
 
 
@@ -68,24 +88,22 @@ def classificar_confiabilidade(meses):
 
 def analisar_fii(df):
 
-    fechamento = "Close"
-
-    meses = df["Month"].nunique()
-
     registros = []
 
-    for periodo, grupo in df.groupby("Month"):
+    meses = int(df["Month"].nunique())
 
-        minimo = grupo[fechamento].min()
-        maximo = grupo[fechamento].max()
-
-        if maximo == minimo:
-            continue
+    for _, grupo in df.groupby("Month"):
 
         grupo = grupo.copy()
 
+        minimo = float(grupo["Close"].min())
+        maximo = float(grupo["Close"].max())
+
+        if np.isclose(maximo, minimo):
+            continue
+
         grupo["Posicao"] = (
-            (grupo[fechamento] - minimo)
+            (grupo["Close"] - minimo)
             / (maximo - minimo)
         )
 
@@ -96,26 +114,35 @@ def analisar_fii(df):
     if len(registros) == 0:
         return None
 
-    base = pd.concat(registros)
+    base = pd.concat(
+        registros,
+        ignore_index=True
+    )
 
-    media_por_dia = (
-        base.groupby("Day")["Posicao"]
-        .mean()
+    estatistica = (
+        base.groupby("Day")
+        .agg(
+            PosicaoMedia=("Posicao", "mean"),
+            Observacoes=("Posicao", "count")
+        )
         .reset_index()
     )
 
-    media_por_dia["Atratividade"] = (
-        1 - media_por_dia["Posicao"]
+    estatistica["Atratividade"] = (
+        1 - estatistica["PosicaoMedia"]
     ) * 100
 
+    estatistica = estatistica.sort_values(
+        "PosicaoMedia"
+    )
+
     melhor_dia = int(
-        media_por_dia.sort_values("Posicao")
-        .iloc[0]["Day"]
+        estatistica.iloc[0]["Day"]
     )
 
     top3 = (
-        media_por_dia.sort_values("Posicao")
-        .head(3)["Day"]
+        estatistica.head(3)["Day"]
+        .astype(int)
         .tolist()
     )
 
@@ -124,33 +151,80 @@ def analisar_fii(df):
         "confiabilidade": classificar_confiabilidade(meses),
         "melhor_dia": melhor_dia,
         "top3": top3,
-        "heatmap": media_por_dia
+        "heatmap": estatistica
     }
 
 
 def calcular_score_atual(df):
 
-    fechamento = "Close"
-
-    hoje = datetime.now().day
-
-    historico_dia = df[
-        df["Day"] == hoje
-    ][fechamento]
-
-    if len(historico_dia) < 5:
+    if len(df) < 30:
         return np.nan
 
-    atual = float(df[fechamento].iloc[-1])
+    atual = float(df["Close"].iloc[-1])
+
+    minimo = float(df["Close"].min())
+    maximo = float(df["Close"].max())
+
+    if np.isclose(maximo, minimo):
+        return np.nan
 
     score = (
-        historico_dia > atual
-    ).mean() * 100
+        (maximo - atual)
+        / (maximo - minimo)
+    ) * 100
+
+    score = max(0, min(score, 100))
 
     return round(score, 1)
 
 
-def gerar_excel(df_ranking):
+def criar_heatmap(heatmap_df):
+
+    dias = list(range(1, 32))
+
+    valores = []
+
+    for dia in dias:
+
+        linha = heatmap_df[
+            heatmap_df["Day"] == dia
+        ]
+
+        if len(linha):
+
+            valores.append(
+                float(
+                    linha["Atratividade"].iloc[0]
+                )
+            )
+
+        else:
+
+            valores.append(np.nan)
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=[valores],
+            x=dias,
+            y=[""],
+            hoverongaps=False
+        )
+    )
+
+    fig.update_layout(
+        height=220,
+        margin=dict(
+            l=20,
+            r=20,
+            t=20,
+            b=20
+        )
+    )
+
+    return fig
+
+
+def gerar_excel(df):
 
     output = BytesIO()
 
@@ -159,7 +233,7 @@ def gerar_excel(df_ranking):
         engine="openpyxl"
     ) as writer:
 
-        df_ranking.to_excel(
+        df.to_excel(
             writer,
             sheet_name="Ranking",
             index=False
@@ -185,9 +259,9 @@ fiis_padrao = [
 ]
 
 texto_fiis = st.sidebar.text_area(
-    "Lista de FIIs (um por linha)",
+    "FIIs (um por linha)",
     value="\n".join(fiis_padrao),
-    height=200
+    height=220
 )
 
 fiis = []
@@ -200,7 +274,7 @@ for linha in texto_fiis.splitlines():
         fiis.append(ticker)
 
 analisar = st.sidebar.button(
-    "🚀 Analisar FIIs",
+    "🚀 Analisar",
     use_container_width=True
 )
 
@@ -212,28 +286,36 @@ if analisar:
 
     ranking = []
 
+    if len(fiis) == 0:
+
+        st.warning(
+            "Informe pelo menos um FII."
+        )
+
+        st.stop()
+
     abas = st.tabs(fiis)
 
-    for i, fii in enumerate(fiis):
+    for idx, fii in enumerate(fiis):
 
-        with abas[i]:
+        with abas[idx]:
 
-            ticker_yahoo = fii + ".SA"
+            ticker = f"{fii}.SA"
 
             st.subheader(f"📊 {fii}")
 
             with st.spinner(
-                f"Baixando histórico de {fii}..."
+                f"Carregando {fii}..."
             ):
 
                 df = baixar_dados(
-                    ticker_yahoo
+                    ticker
                 )
 
             if df is None:
 
                 st.error(
-                    "Não foi possível carregar os dados."
+                    "Não foi possível obter dados."
                 )
 
                 continue
@@ -269,7 +351,7 @@ if analisar:
             )
 
             c2.metric(
-                "Meses Analisados",
+                "Meses",
                 analise["meses"]
             )
 
@@ -279,13 +361,13 @@ if analisar:
             )
 
             c4.metric(
-                "Score Atual",
-                f"{score:.1f}"
-                if pd.notna(score)
-                else "N/A"
+                "Score",
+                score
             )
 
-            st.markdown("### 🏆 Top 3 Dias")
+            st.markdown(
+                "### 🏆 Top 3 Dias"
+            )
 
             top3_df = pd.DataFrame({
                 "Posição": [
@@ -301,27 +383,34 @@ if analisar:
                 use_container_width=True
             )
 
-            st.markdown("### 🔥 Heatmap")
+            st.markdown(
+                "### 🔥 Heatmap"
+            )
 
-            heatmap = analise["heatmap"].copy()
-
-            heatmap["Linha"] = 1
-
-            fig = px.imshow(
-                np.array(
-                    [heatmap["Atratividade"].values]
+            st.plotly_chart(
+                criar_heatmap(
+                    analise["heatmap"]
                 ),
-                labels=dict(
-                    x="Dia do Mês",
-                    y="",
-                    color="Atratividade"
-                ),
-                x=heatmap["Day"].astype(str),
-                aspect="auto"
+                use_container_width=True
+            )
+
+            st.markdown(
+                "### 📈 Histórico"
+            )
+
+            fig = go.Figure()
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df["Date"],
+                    y=df["Close"],
+                    mode="lines",
+                    name=fii
+                )
             )
 
             fig.update_layout(
-                height=250
+                height=450
             )
 
             st.plotly_chart(
@@ -329,36 +418,21 @@ if analisar:
                 use_container_width=True
             )
 
-            st.markdown("### 📈 Histórico")
-
-            fig2 = px.line(
-                df,
-                x="Date",
-                y="Close",
-                title=f"{fii} - Histórico de Preços"
-            )
-
-            st.plotly_chart(
-                fig2,
-                use_container_width=True
-            )
-
-    # ======================================================
-    # RANKING GERAL
-    # ======================================================
-
-    if len(ranking) > 0:
+    if len(ranking):
 
         st.divider()
 
-        st.header("🏆 Ranking Geral")
+        st.header(
+            "🏆 Ranking Geral"
+        )
 
-        ranking_df = pd.DataFrame(ranking)
+        ranking_df = pd.DataFrame(
+            ranking
+        )
 
         ranking_df = ranking_df.sort_values(
             "Score Atual",
-            ascending=False,
-            na_position="last"
+            ascending=False
         )
 
         st.dataframe(
@@ -371,7 +445,7 @@ if analisar:
         )
 
         st.download_button(
-            "📥 Exportar Ranking Excel",
+            label="📥 Exportar Excel",
             data=excel,
             file_name="ranking_fiis.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -380,5 +454,5 @@ if analisar:
 else:
 
     st.info(
-        "Clique em 'Analisar FIIs' na barra lateral para iniciar a análise."
+        "Clique em 'Analisar' para iniciar."
     )
