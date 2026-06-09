@@ -156,24 +156,105 @@ def analisar_fii(df):
 
 def calcular_score_sazonal(df):
 
-    hoje = datetime.now().day
+    try:
 
-    historico_mesmo_dia = df[
-        df["Day"] == hoje
-    ]["Close"]
+        hoje = datetime.now().day
 
-    if len(historico_mesmo_dia) < 5:
+        registros = []
+
+        for _, grupo in df.groupby("Month"):
+
+            grupo = grupo.copy()
+
+            minimo = float(grupo["Close"].min())
+            maximo = float(grupo["Close"].max())
+
+            if np.isclose(maximo, minimo):
+                continue
+
+            grupo["Posicao"] = (
+                (grupo["Close"] - minimo)
+                / (maximo - minimo)
+            )
+
+            registros.append(
+                grupo[["Date", "Day", "Posicao"]]
+            )
+
+        if len(registros) == 0:
+            return np.nan
+
+        base = pd.concat(
+            registros,
+            ignore_index=True
+        )
+
+        historico_mesmo_dia = base[
+            base["Day"] == hoje
+        ]["Posicao"]
+
+        if len(historico_mesmo_dia) < 5:
+            return np.nan
+
+        ultimo_mes = df["Month"].max()
+
+        grupo_atual = df[
+            df["Month"] == ultimo_mes
+        ].copy()
+
+        minimo_atual = float(
+            grupo_atual["Close"].min()
+        )
+
+        maximo_atual = float(
+            grupo_atual["Close"].max()
+        )
+
+        if np.isclose(
+            minimo_atual,
+            maximo_atual
+        ):
+            return np.nan
+
+        preco_atual = float(
+            df["Close"].iloc[-1]
+        )
+
+        posicao_atual = (
+            (preco_atual - minimo_atual)
+            / (maximo_atual - minimo_atual)
+        )
+
+        score = (
+            historico_mesmo_dia >
+            posicao_atual
+        ).mean() * 100
+
+        return round(score, 1)
+
+    except Exception:
+
         return np.nan
 
-    atual = float(
-        df["Close"].iloc[-1]
-    )
 
-    score = (
-        historico_mesmo_dia > atual
-    ).mean() * 100
+def gerar_excel(df):
 
-    return round(score, 1)
+    output = BytesIO()
+
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl"
+    ) as writer:
+
+        df.to_excel(
+            writer,
+            sheet_name="Ranking",
+            index=False
+        )
+
+    output.seek(0)
+
+    return output
 
 
 # ==========================================================
