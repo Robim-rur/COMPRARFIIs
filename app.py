@@ -18,8 +18,8 @@ st.set_page_config(
 st.title("🏢 FII Best Buy Day Analyzer")
 
 st.caption(
-    "Descubra quais dias do mês historicamente apresentaram "
-    "os preços mais próximos da mínima mensal."
+    "Identifique quais dias do mês historicamente negociaram "
+    "mais próximos das mínimas mensais."
 )
 
 # ==========================================================
@@ -45,6 +45,12 @@ def baixar_dados(ticker):
             df.columns = df.columns.get_level_values(0)
 
         df = df.reset_index()
+
+        if "Date" not in df.columns:
+            return None
+
+        if "Close" not in df.columns:
+            return None
 
         df["Date"] = pd.to_datetime(df["Date"])
 
@@ -232,13 +238,21 @@ if analisar:
 
     ranking = []
 
+    if len(fiis) == 0:
+
+        st.warning(
+            "Informe pelo menos um FII."
+        )
+
+        st.stop()
+
     abas = st.tabs(fiis)
 
-    for i, fii in enumerate(fiis):
+    for idx, fii in enumerate(fiis):
 
-        with abas[i]:
+        with abas[idx]:
 
-            ticker = fii + ".SA"
+            ticker = f"{fii}.SA"
 
             st.subheader(f"📊 {fii}")
 
@@ -246,7 +260,9 @@ if analisar:
                 f"Carregando {fii}..."
             ):
 
-                df = baixar_dados(ticker)
+                df = baixar_dados(
+                    ticker
+                )
 
             if df is None:
 
@@ -268,6 +284,18 @@ if analisar:
 
             score = calcular_score_sazonal(df)
 
+            data_inicio = (
+                df["Date"]
+                .min()
+                .strftime("%d/%m/%Y")
+            )
+
+            data_final = (
+                df["Date"]
+                .max()
+                .strftime("%d/%m/%Y")
+            )
+
             ranking.append({
                 "FII": fii,
                 "Melhor Dia": analise["melhor_dia"],
@@ -279,7 +307,7 @@ if analisar:
                 "Score": score
             })
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4 = st.columns(4)
 
             c1.metric(
                 "Melhor Dia",
@@ -298,21 +326,26 @@ if analisar:
 
             c4.metric(
                 "Score Sazonal",
-                score
+                "N/A" if pd.isna(score) else score
             )
 
-            c5.metric(
-                "Início Histórico",
-                df["Date"].dt.date.min()
+            st.markdown(
+                f"""
+                **Início do histórico:** {data_inicio}
+
+                **Fim do histórico:** {data_final}
+                """
             )
 
             st.markdown("### 🏆 Top 3 Dias")
 
+            top3_df = pd.DataFrame({
+                "Posição": ["1º", "2º", "3º"],
+                "Dia": analise["top3"]
+            })
+
             st.dataframe(
-                pd.DataFrame({
-                    "Posição": ["1º", "2º", "3º"],
-                    "Dia": analise["top3"]
-                }),
+                top3_df,
                 use_container_width=True
             )
 
@@ -330,7 +363,8 @@ if analisar:
             )
 
             fig.update_layout(
-                height=450
+                height=450,
+                showlegend=False
             )
 
             st.plotly_chart(
@@ -364,7 +398,7 @@ if analisar:
         )
 
         st.download_button(
-            "📥 Exportar Excel",
+            label="📥 Exportar Excel",
             data=excel,
             file_name="ranking_fiis.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
